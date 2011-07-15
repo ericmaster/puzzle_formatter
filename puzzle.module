@@ -1,0 +1,377 @@
+<?php
+define('PUZZLE_LEVELS_NUMBER_DEFAULT', 3);
+define('PUZZLE_IMG_WIDTH_DEFAULT', 800);
+define('PUZZLE_IMG_HEIGHT_DEFAULT', 600);
+define('PUZZLE_LEVEL_0_X_DIV_DEFAULT', 3);
+define('PUZZLE_LEVEL_0_Y_DIV_DEFAULT', 3);
+define('PUZZLE_LEVEL_0_PPRS_DEFAULT', 3);
+define('PUZZLE_LEVEL_1_X_DIV_DEFAULT', 4);
+define('PUZZLE_LEVEL_1_Y_DIV_DEFAULT', 3);
+define('PUZZLE_LEVEL_1_PPRS_DEFAULT', 8);
+define('PUZZLE_LEVEL_2_X_DIV_DEFAULT', 6);
+define('PUZZLE_LEVEL_2_Y_DIV_DEFAULT', 4);
+define('PUZZLE_LEVEL_2_PPRS_DEFAULT', 20);
+define('PUZZLE_TIMEOUT_COUNTER_DEFAULT', 120);
+define('PUZZLE_LEVEL_0_WIN_TEXT_DEFAULT', 
+  '!!LO LOGRASTE!!');
+define('PUZZLE_LEVEL_1_WIN_TEXT_DEFAULT', 
+  '!!GANASTE!!');
+define('PUZZLE_LEVEL_2_WIN_TEXT_DEFAULT', 
+  '!!GANASTE!!');
+define('PUZZLE_LEVEL_0_WIN_SEC_TEXT_DEFAULT', 
+  'AHORA ESTAS LISTO PARA EL RETO');
+
+/**
+ * Implementation of hook_permission();
+ */
+function puzzle_permission(){
+  return array(
+    'administer puzzle' => array(
+      'title' => t('Administer Puzzle'), 
+      'description' => t('Perform administration tasks for puzzle image formatter.'),
+    ),
+  );
+}
+
+/**
+ * Implementation of hook_menu()
+ */
+function puzzle_menu(){
+  $items['admin/grants'] = array(
+    'title' => 'Grants Admin',
+    'page callback' => 'drupal_get_form',
+    'access arguments' => array('administer puzzle'),
+    'page arguments' => array('_puzzle_settings_form'),
+    'type' => MENU_NORMAL_ITEM
+  );
+  $items['admin/grants/puzzle'] = array(
+    'title' => 'Puzzle',
+    'page callback' => 'drupal_get_form',
+    'access arguments' => array('administer puzzle'),
+    'page arguments' => array('_puzzle_settings_form'),
+    'type' => MENU_NORMAL_ITEM
+  );
+  $items['admin/grants/puzzle/settings'] = array(
+    'title' => 'Puzzle Settings',
+    'page callback' => 'drupal_get_form',
+      'page arguments' => array('_puzzle_settings_form'),
+      'access arguments' => array('administer puzzle'),
+    'type' => MENU_NORMAL_ITEM,
+    'file' => 'puzzle.admin.inc'
+  );
+  $items['puzzle/game-start/%'] = array(
+	'page callback' => '_puzzle_game_start',
+    'page arguments' => array(2),
+    'access arguments' => array('access content'),
+	'type' => MENU_CALLBACK,
+  );
+  $items['puzzle/update-level'] = array(
+	'page callback' => '_puzzle_update_level',
+    /*'page arguments' => array(''),*/
+    'access arguments' => array('access content'),
+	'type' => MENU_CALLBACK,
+  );
+  return $items;
+}
+
+/**
+ * Implements hook_theme().
+ */
+function puzzle_theme() {
+  return array(
+    'puzzle_formatter' => array(
+      'variables' => array(
+        'item' => NULL, 
+				'path' => NULL, 
+				'image_style' => NULL,
+      ),
+    ),
+  );
+}
+
+/**
+ * Implements hook_field_formatter_info().
+ */
+function puzzle_field_formatter_info() {
+  $formatters = array(
+    'image_puzzle' => array(
+      'label' => t('Image Puzzle'),
+      'field types' => array('image'),
+      'settings' => array('image_style' => '', 'image_link' => ''),
+    ),
+  );
+
+  return $formatters;
+}
+
+/**
+ * Implementation of hook_form_alter
+ */
+function puzzle_form_alter(&$form, &$form_state, $form_id){
+  if($form_id == 'user_profile_form' && user_access('administer grants users')){
+    $form['grants_config'] = array(
+      '#type' => 'fieldset',
+      '#title' => 'Grants Options',
+      '#collapsible' => FALSE,
+      '#collapsed' => FALSE,
+    );
+    $form['grants_config']['puzzle'] = array(
+      '#type' => 'fieldset',
+      '#title' => 'Puzzle',
+      '#collapsible' => FALSE,
+      '#collapsed' => FALSE,
+    );
+    $score = !empty($form['#user']->data['puzzle_score'])?
+      $form['#user']->data['puzzle_score']:0;
+    $form['grants_config']['puzzle']['puzzle_score'] = array(
+      '#type' => 'textfield',
+      '#title' => 'Score',
+      '#default_value' => $score
+    );
+    $level = !empty($form['#user']->data['level'])?
+      $form['#user']->data['level']:0;
+    $form['grants_config']['puzzle']['puzzle_level'] = array(
+      '#type' => 'textfield',
+      '#title' => 'Level',
+      '#default_value' => $level
+    );
+  }
+}
+
+/**
+ * Implementation of hook_user_presave
+ */
+function puzzle_user_presave(&$edit, $account, $category){
+  if(isset($edit['puzzle_score'])){
+    $edit['data']['puzzle_score'] = $edit['puzzle_score'];
+  }
+  if(isset($edit['puzzle_level'])){
+    $edit['data']['level'] = $edit['level'];
+  }
+}
+
+
+/**
+ * Implements hook_field_formatter_settings_form().
+ */
+function puzzle_field_formatter_settings_form($field, $instance, $view_mode, $form, &$form_state) {
+  $display = $instance['display'][$view_mode];
+  $settings = $display['settings'];
+
+  $image_styles = image_style_options(FALSE);
+  $element['image_style'] = array(
+    '#title' => t('Image style'),
+    '#type' => 'select',
+    '#default_value' => $settings['image_style'],
+    '#empty_option' => t('None (original image)'),
+    '#options' => $image_styles,
+  );
+
+  return $element;
+}
+
+/**
+ * Implements hook_field_formatter_settings_summary().
+ */
+function puzzle_field_formatter_settings_summary($field, $instance, $view_mode) {
+  $display = $instance['display'][$view_mode];
+  $settings = $display['settings'];
+
+  $summary = array();
+
+  $image_styles = image_style_options(FALSE);
+  // Unset possible 'No defined styles' option.
+  unset($image_styles['']);
+  // Styles could be lost because of enabled/disabled modules that defines
+  // their styles in code.
+  if (isset($image_styles[$settings['image_style']])) {
+    $summary[] = t('URL for image style: @style', array('@style' => $image_styles[$settings['image_style']]));
+  }
+  else {
+    $summary[] = t('Original image URL');
+  }
+
+  return implode('<br />', $summary);
+}
+/**
+ * Implements hook_field_formatter_view().
+ */
+function puzzle_field_formatter_view($entity_type, $entity, $field, $instance, $langcode, $items, $display) {
+  $element = array();
+	
+  switch ($display['type']) {
+    case 'image_puzzle':
+      foreach ($items as $delta => $item) {
+        
+        $uri = array(
+          'path' => file_create_url($item['uri']),
+          'options' => array(),
+        );
+        
+        $element[$delta] = array(
+          '#theme' => 'puzzle_formatter',
+          '#item' => $item,
+          '#image_style' => $display['settings']['image_style'],
+          '#path' => isset($uri) ? $uri : '',
+        );
+      }
+
+      break;
+
+  }
+
+  return $element;
+}
+
+/**
+ * Returns HTML for an image url field formatter.
+ *
+ * @param $variables
+ *   An associative array containing:
+ *   - item: An array of image data.
+ *   - image_style: An optional image style.
+ *   - path: An array containing the link 'path' and link 'options'.
+ *
+ * @ingroup themeable
+ */
+function theme_puzzle_formatter($variables) {
+  global $user;
+  drupal_add_library('system', 'ui.dialog');
+  drupal_add_js(drupal_get_path('module', 'puzzle').'/js/puzzle.js');
+  $item = $variables['item'];
+  $image = array(
+    'path' => $item['uri'], 
+    'alt' => $item['alt'],
+  );
+  // Do not output an empty 'title' attribute.
+  if (drupal_strlen($item['title']) > 0) {
+    $image['title'] = $item['title'];
+  }
+  
+  $id = 'puzzle-canvas';
+  global $base_url;
+  if ($variables['image_style']) {
+    $image['style_name'] = $variables['image_style'];
+    $image_url = image_style_url($image['style_name'], $item['uri']);
+	
+	$image_url = str_replace($base_url, '', $image_url);
+	$image_info = image_get_info(substr($image_url,1));
+	$width = $image_info['width'];
+	$height = $image_info['height'];
+	$level = _puzzle_get_level();
+  //drupal_set_message('level:'.$level);
+	$xdiv = variable_get('puzzle_x_divisions_'.$level, 
+        constant('PUZZLE_LEVEL_'.$level.'_X_DIV_DEFAULT'));
+  $ydiv = variable_get('puzzle_y_divisions_'.$level, 
+        constant('PUZZLE_LEVEL_'.$level.'_Y_DIV_DEFAULT'));
+	$counter_start = variable_get('puzzle_timeout_counter_'.$level, 
+      PUZZLE_TIMEOUT_COUNTER_DEFAULT); 
+	$script = 'jQuery(document).ready(function() {'.
+	  'initPuzzle("'.$id.'","'.$image_url.'",'.$width.','.$height.','.$xdiv.','.$ydiv.','.$counter_start.','.$level.');'.
+	  '});';
+	drupal_add_js($script, 'inline');
+	
+  }
+  else {
+    $output = theme('image', $image);
+  }
+  
+  $output = '<canvas id="'.$id.'" width="'.$width.'" height="'.$height.'">
+		Lo sentimos, su navegador no soporta HTML5 canvas.
+	</canvas>';
+  $output .= '<div id="debug"></div>';
+
+  return $output;
+}
+
+/**
+ * Callback function called when a new game is started
+ */
+function _puzzle_game_start($level){
+	global $user;
+	$account = $user;
+	$edit = (array) $user;
+	$edit['data']['start_stamp'] = time();
+	$edit['data']['start_level'] = $level;
+	user_save($account, $edit);
+}
+
+/**
+ * Callback function called after winning, it updates the level
+ */
+function _puzzle_update_level(){
+	global $user;
+	
+  //check start_stamp and give it about 10 seconds for transfer time
+  $cur_time = time();
+  $start_time = $user->data['start_stamp'];
+  if(!$user->uid || $cur_time < $start_time + variable_get('puzzle_timeout_counter_'.$level, 
+      PUZZLE_TIMEOUT_COUNTER_DEFAULT)+ 10){
+    $output = array();
+    //get current level, played level and next level
+    $cur_level = !empty($user->data['level'])?$user->data['level']:0;
+    $played_level = !empty($user->data['start_level'])?$user->data['start_level']:0;
+    $next_level = $played_level+1;
+    //update score
+    $user_score = !empty($user->data['puzzle_score'])?$user->data['puzzle_score']:0;
+    $counter_start = variable_get('puzzle_timeout_counter_'.$played_level, 
+      PUZZLE_TIMEOUT_COUNTER_DEFAULT); 
+    $time_left = $counter_start - ($cur_time - $start_time);
+    $score = $time_left * variable_get('puzzle_pprs_'.$played_level, 
+      constant('PUZZLE_LEVEL_'.$played_level.'_PPRS_DEFAULT'));
+    if($score > $user_score){
+      $account = $user;
+      $edit = (array) $user;
+      $edit['data']['puzzle_score'] = $score;
+      $output['mensaje'] = 'Felicitaciones haz alcanzado un nuevo puntaje';
+    }
+    //if($time_left < 'blah')
+    if($next_level > $cur_level){
+      if(empty($account)){
+        $account = $user;
+        $edit = (array) $user;
+      }
+      $edit['data']['level'] = $next_level;
+    }
+    if(!empty($edit)){
+      user_save($account, $edit);
+    }
+    $output['score'] = $score;
+  }else{
+    $output = array('error' => 'Lo sentimos, tu sesion de juego ha expirado');
+  }
+  print drupal_json_encode($output);
+  exit();
+}
+
+/**
+ * Helper function retrieves the level of the current user
+ */
+function _puzzle_get_level($account = NULL){
+  if(is_null($account)){
+    global $user;
+    $account = $user;
+  }
+  $puzzle_levels = variable_get('puzzle_levels_number', 
+    PUZZLE_LEVELS_NUMBER_DEFAULT);
+  $level = !empty($account->data['level'])?$account->data['level']:0;
+	if(isset($_GET['level'])){
+	  if($level >= $_GET['level']){
+      $level = $_GET['level'];
+	  }
+	}
+  if( $level >= $puzzle_levels){
+    $level = $puzzle_levels - 1;
+  }
+  return $level;
+}
+
+
+function _puzzle_get_score($account = NULL){
+  if(is_null($account)){
+    global $user;
+    $account = $user;
+  }  
+  $score = !empty($account->data['puzzle_score'])?$account->data['puzzle_score']:0;
+  return $score;
+}

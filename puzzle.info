@@ -1,0 +1,4 @@
+name = Puzzle Formatter
+description = "Provides a Image Field Formatter that displays an image as a Puzzle."
+core = 7.x
+configure = admin/config/content/puzzle
